@@ -10,12 +10,19 @@ type Employee struct {
 	BasicSalary float64
 	CountryCode string
 	PieceRate   []PieceRateAggregation
+	Allowance   float64
 }
 
 type PieceRateAggregation struct {
 	Item     string
 	Rate     float64 // unit price
 	Quantity float64
+}
+
+type PayrollConfig struct {
+	SplitEnabled     bool
+	BasicSalaryRatio float64
+	AllowanceRatio   float64
 }
 
 func (e *Employee) CalculateSalary() float64 {

@@ -17,6 +17,7 @@ type Country struct {
 func main() {
 	reader := bufio.NewReader(os.Stdin)
 	countries := make(map[string]Country)
+	config := payroll.PayrollConfig{SplitEnabled: false} // Default disabled
 
 	// Country setup
 	fmt.Println("=== Country Setup ===")
@@ -57,6 +58,23 @@ func main() {
 		return
 	}
 
+	// Configure splitting
+	fmt.Print("\nEnable salary splitting when piece-rate exceeds basic? (y/n): ")
+	splitInput, _ := reader.ReadString('\n')
+	if strings.ToLower(strings.TrimSpace(splitInput)) == "y" {
+		config.SplitEnabled = true
+
+		fmt.Print("Enter basic salary ratio (e.g., 0.7 for 70%): ")
+		basicRatioStr, _ := reader.ReadString('\n')
+		basicRatio, err := strconv.ParseFloat(strings.TrimSpace(basicRatioStr), 64)
+		if err != nil || basicRatio <= 0 || basicRatio >= 1 {
+			fmt.Println("Invalid ratio. Using default 0.7")
+			basicRatio = 0.7
+		}
+		config.BasicSalaryRatio = basicRatio
+		config.AllowanceRatio = 1 - basicRatio
+	}
+
 	// Employee setup
 	fmt.Println("\n=== Employee Setup ===")
 	var employees []payroll.Employee
@@ -81,12 +99,6 @@ func main() {
 		emp.BasicSalary = salary
 
 		// Add piece-rate work
-		if salary == 0 {
-			fmt.Println("\nAdding piece-rate work (required for employees with no basic salary)")
-		} else {
-			fmt.Println("\nAdding optional piece-rate bonus work")
-		}
-
 		for {
 			fmt.Print("Add piece-rate item (name or 'done'): ")
 			item, _ := reader.ReadString('\n')
@@ -118,12 +130,6 @@ func main() {
 			})
 		}
 
-		// Validate at least some piece-rate work if no basic salary
-		if emp.BasicSalary == 0 && len(emp.PieceRate) == 0 {
-			fmt.Println("Error: Piece-rate employees must have at least one piece-rate item")
-			continue
-		}
-
 		fmt.Print("Enter employee's country code: ")
 		countryCode, _ := reader.ReadString('\n')
 		countryCode = strings.ToUpper(strings.TrimSpace(countryCode))
@@ -142,45 +148,65 @@ func main() {
 		return
 	}
 
-	// Process and print results
+	// Process payroll
 	fmt.Println("\n=== Payroll Results ===")
 	for _, emp := range employees {
 		country := countries[emp.CountryCode]
-		totalEarnings := emp.BasicSalary
+		pieceEarnings := calculatePieceEarnings(emp.PieceRate)
+		totalEarnings := emp.BasicSalary + pieceEarnings
 
-		// Calculate piece-rate earnings
-		pieceEarnings := 0.0
-		if len(emp.PieceRate) > 0 {
-			fmt.Printf("\n%s's Piece-Rate Aggregation:\n", emp.Name)
-			for _, pw := range emp.PieceRate {
-				earning := pw.Rate * pw.Quantity
-				fmt.Printf("- %s: %.0f @ %.2f = %.2f\n", pw.Item, pw.Quantity, pw.Rate, earning)
-				pieceEarnings += earning
-			}
-			fmt.Printf("Total Piece-Rate Earnings: %.2f\n", pieceEarnings)
+		// Apply splitting if enabled and conditions met
+		if config.SplitEnabled && emp.BasicSalary > 0 && pieceEarnings >= emp.BasicSalary {
+			splitAmount := pieceEarnings
+			emp.BasicSalary += splitAmount * config.BasicSalaryRatio
+			emp.Allowance = splitAmount * config.AllowanceRatio
+			pieceEarnings = 0 // Reset since we've converted to salary+allowance
+			fmt.Printf("\nSplit %.2f piece-rate into:\n- Basic: %.2f\n- Allowance: %.2f\n",
+				splitAmount, emp.BasicSalary, emp.Allowance)
 		}
 
-		// Apply minimum wage check to basic salary
+		// Minimum wage enforcement
 		if emp.BasicSalary > 0 && emp.BasicSalary < country.MinimumWage {
-			fmt.Printf("Adjusting basic salary to meet minimum wage (%.2f -> %.2f)\n",
-				emp.BasicSalary, country.MinimumWage)
+			adjustment := country.MinimumWage - emp.BasicSalary
 			emp.BasicSalary = country.MinimumWage
-
-			//fmt.Printf("Basic Salary for", "%s: %.2f\n", emp.Name, country.MinimumWage)
+			fmt.Printf("Adjusted basic salary to meet minimum wage (+%.2f)\n", adjustment)
 		}
 
-		totalEarnings = country.MinimumWage + pieceEarnings
+		// Final calculation
+		totalEarnings = emp.BasicSalary + emp.Allowance + pieceEarnings
 
-		// For piece-rate only employees, ensure total meets minimum wage
-		if emp.BasicSalary == 0 && totalEarnings < country.MinimumWage {
-			shortfall := country.MinimumWage - totalEarnings
-			fmt.Printf("Warning: Total earnings (%.2f) below minimum wage (%.2f)\n",
-				totalEarnings, country.MinimumWage)
-			fmt.Printf("Shortfall: %.2f (must be paid to employee)\n", shortfall)
-			totalEarnings = country.MinimumWage
-		}
-
-		fmt.Printf("\n%s's Total Earnings: %.2f\n", emp.Name, totalEarnings)
-		fmt.Println(strings.Repeat("-", 40))
+		// Print results
+		printPayrollReport(emp, country, pieceEarnings, totalEarnings)
 	}
+}
+
+func calculatePieceEarnings(pieces []payroll.PieceRateAggregation) float64 {
+	total := 0.0
+	for _, pw := range pieces {
+		total += pw.Rate * pw.Quantity
+	}
+	return total
+}
+
+func printPayrollReport(emp payroll.Employee, country Country, pieceEarnings, total float64) {
+	fmt.Printf("\n=== %s ===\n", emp.Name)
+	fmt.Printf("Country: %s (Min Wage: %.2f)\n", country.Name, country.MinimumWage)
+
+	if emp.BasicSalary > 0 {
+		fmt.Printf("Basic Salary: %.2f\n", emp.BasicSalary)
+	}
+	if emp.Allowance > 0 {
+		fmt.Printf("Allowance: %.2f\n", emp.Allowance)
+	}
+	if len(emp.PieceRate) > 0 {
+		fmt.Println("\nPiece-Rate Work:")
+		for _, pw := range emp.PieceRate {
+			fmt.Printf("- %s: %.0f × %.2f = %.2f\n",
+				pw.Item, pw.Quantity, pw.Rate, pw.Rate*pw.Quantity)
+		}
+		fmt.Printf("Total Piece-Rate: %.2f\n", pieceEarnings)
+	}
+
+	fmt.Printf("\nTOTAL EARNINGS: %.2f\n", total)
+	fmt.Println(strings.Repeat("=", 30))
 }
