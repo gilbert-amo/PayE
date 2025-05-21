@@ -1,10 +1,11 @@
 package main
 
 import (
-	"PayE/payroll"
 	"bufio"
 	"fmt"
+	"github.com/gilbert-amo/PayE/payroll"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -12,14 +13,15 @@ import (
 type Country struct {
 	Name        string
 	MinimumWage float64
+	TaxBrackets []payroll.TaxBracket
 }
 
 func main() {
 	reader := bufio.NewReader(os.Stdin)
 	countries := make(map[string]Country)
-	config := payroll.PayrollConfig{SplitEnabled: false} // Default disabled
+	config := payroll.PayrollConfig{SplitEnabled: false}
 
-	// Country setup
+	// Country setup (unchanged)
 	fmt.Println("=== Country Setup ===")
 	for {
 		fmt.Print("\nEnter country code (3 letters, or 'done' to finish): ")
@@ -47,9 +49,51 @@ func main() {
 			continue
 		}
 
+		// Tax bracket setup
+		var taxBrackets []payroll.TaxBracket
+		// When setting up country tax brackets:
+		fmt.Println("\nSetting up peak tax brackets:")
+		fmt.Println("Enter thresholds where specific rates should apply")
+		fmt.Println("Example: If salary reaches 500, apply 5% to entire amount")
+		//fmt.Println("         If salary reaches 1000, apply 10% to entire amount")
+
+		for {
+			fmt.Print("Enter threshold amount (or 'done'): ")
+			thresholdStr, _ := reader.ReadString('\n')
+			thresholdStr = strings.TrimSpace(thresholdStr)
+			if strings.ToLower(thresholdStr) == "done" {
+				break
+			}
+
+			threshold, err := strconv.ParseFloat(thresholdStr, 64)
+			if err != nil {
+				fmt.Println("Invalid threshold. Please enter a valid number.")
+				continue
+			}
+
+			fmt.Print("Enter tax rate to apply when threshold is reached (e.g., 5 for 5%): ")
+			rateStr, _ := reader.ReadString('\n')
+			rate, err := strconv.ParseFloat(strings.TrimSpace(rateStr), 64)
+			if err != nil {
+				fmt.Println("Invalid rate. Please enter a valid number.")
+				continue
+			}
+
+			taxBrackets = append(taxBrackets, payroll.TaxBracket{
+				Threshold: threshold,
+				Rate:      rate,
+			})
+		}
+
+		// Sort brackets by threshold
+		sort.Slice(taxBrackets, func(i, j int) bool {
+			return taxBrackets[i].Threshold < taxBrackets[j].Threshold
+		})
+
 		countries[code] = Country{
 			Name:        name,
 			MinimumWage: minWage,
+			TaxBrackets: taxBrackets,
 		}
 	}
 
@@ -58,8 +102,8 @@ func main() {
 		return
 	}
 
-	// Configure splitting
-	fmt.Print("\nEnable salary splitting when piece-rate exceeds basic? (y/n): ")
+	// Configure splitting (unchanged)
+	fmt.Print("\nEnable salary splitting when piece-rate ≥ basic? (y/n): ")
 	splitInput, _ := reader.ReadString('\n')
 	if strings.ToLower(strings.TrimSpace(splitInput)) == "y" {
 		config.SplitEnabled = true
@@ -130,6 +174,11 @@ func main() {
 			})
 		}
 
+		if len(emp.PieceRate) == 0 && emp.BasicSalary == 0 {
+			fmt.Println("Error: Employee must have either basic salary or piece-rate work")
+			continue
+		}
+
 		fmt.Print("Enter employee's country code: ")
 		countryCode, _ := reader.ReadString('\n')
 		countryCode = strings.ToUpper(strings.TrimSpace(countryCode))
@@ -153,30 +202,48 @@ func main() {
 	for _, emp := range employees {
 		country := countries[emp.CountryCode]
 		pieceEarnings := calculatePieceEarnings(emp.PieceRate)
-		totalEarnings := emp.BasicSalary + pieceEarnings
+		originalBasic := emp.BasicSalary
+		emp.Allowance = 0
 
-		// Apply splitting if enabled and conditions met
-		if config.SplitEnabled && emp.BasicSalary > 0 && pieceEarnings >= emp.BasicSalary {
-			splitAmount := pieceEarnings
-			emp.BasicSalary += splitAmount * config.BasicSalaryRatio
-			emp.Allowance = splitAmount * config.AllowanceRatio
-			pieceEarnings = 0 // Reset since we've converted to salary+allowance
-			fmt.Printf("\nSplit %.2f piece-rate into:\n- Basic: %.2f\n- Allowance: %.2f\n",
-				splitAmount, emp.BasicSalary, emp.Allowance)
+		// Handle employees with no basic salary
+		if originalBasic == 0 && len(emp.PieceRate) > 0 {
+			fmt.Printf("\n%s has no basic salary - using piece-rate as basic\n", emp.Name)
+			emp.BasicSalary = pieceEarnings
+			pieceEarnings = 0 // Reset since we've converted to basic salary
+		}
+
+		// Conditional splitting for employees with both
+		if originalBasic > 0 && config.SplitEnabled && pieceEarnings >= originalBasic {
+			fmt.Printf("\nPiece-rate (%.2f) ≥ basic salary (%.2f)\n", pieceEarnings, originalBasic)
+			fmt.Println("Converting piece-rate to basic salary + allowance")
+
+			emp.BasicSalary = pieceEarnings * config.BasicSalaryRatio
+			emp.Allowance = pieceEarnings * config.AllowanceRatio
+			fmt.Printf("- New Basic: %.2f\n- Allowance: %.2f\n", emp.BasicSalary, emp.Allowance)
+		} else if originalBasic > 0 && len(emp.PieceRate) > 0 {
+			// Keep original basic and add piece-rate as bonus
+			fmt.Printf("\nAdding piece-rate earnings (%.2f) as bonus\n", pieceEarnings)
+			emp.Allowance = pieceEarnings
 		}
 
 		// Minimum wage enforcement
-		if emp.BasicSalary > 0 && emp.BasicSalary < country.MinimumWage {
-			adjustment := country.MinimumWage - emp.BasicSalary
+		if emp.BasicSalary < country.MinimumWage {
+			fmt.Printf("Adjusting basic salary to meet minimum wage (%.2f → %.2f)\n",
+				emp.BasicSalary, country.MinimumWage)
 			emp.BasicSalary = country.MinimumWage
-			fmt.Printf("Adjusted basic salary to meet minimum wage (+%.2f)\n", adjustment)
 		}
 
-		// Final calculation
-		totalEarnings = emp.BasicSalary + emp.Allowance + pieceEarnings
+		totalEarnings := emp.BasicSalary + emp.Allowance
 
-		// Print results
-		printPayrollReport(emp, country, pieceEarnings, totalEarnings)
+		taxAmount := 0.0
+		if len(country.TaxBrackets) > 0 {
+			taxAmount = payroll.CalculateTax(totalEarnings, country.TaxBrackets)
+		}
+
+		netSalary := totalEarnings - taxAmount
+
+		// Print results with tax details
+		printPayrollReport(emp, country, originalBasic, totalEarnings, taxAmount, netSalary)
 	}
 }
 
@@ -188,25 +255,40 @@ func calculatePieceEarnings(pieces []payroll.PieceRateAggregation) float64 {
 	return total
 }
 
-func printPayrollReport(emp payroll.Employee, country Country, pieceEarnings, total float64) {
+func printPayrollReport(emp payroll.Employee, country Country, originalBasic, gross, tax, net float64) {
 	fmt.Printf("\n=== %s ===\n", emp.Name)
 	fmt.Printf("Country: %s (Min Wage: %.2f)\n", country.Name, country.MinimumWage)
 
-	if emp.BasicSalary > 0 {
-		fmt.Printf("Basic Salary: %.2f\n", emp.BasicSalary)
+	if originalBasic > 0 {
+		fmt.Printf("\nOriginal Basic Salary: %.2f\n", originalBasic)
 	}
+	fmt.Printf("Current Basic Salary: %.2f\n", emp.BasicSalary)
+
 	if emp.Allowance > 0 {
 		fmt.Printf("Allowance: %.2f\n", emp.Allowance)
 	}
+
 	if len(emp.PieceRate) > 0 {
-		fmt.Println("\nPiece-Rate Work:")
+		fmt.Println("\nPiece-Rate Details:")
 		for _, pw := range emp.PieceRate {
 			fmt.Printf("- %s: %.0f × %.2f = %.2f\n",
 				pw.Item, pw.Quantity, pw.Rate, pw.Rate*pw.Quantity)
 		}
-		fmt.Printf("Total Piece-Rate: %.2f\n", pieceEarnings)
+		fmt.Printf("Total Piece-Rate Earnings: %.2f\n", calculatePieceEarnings(emp.PieceRate))
 	}
 
-	fmt.Printf("\nTOTAL EARNINGS: %.2f\n", total)
+	fmt.Println("\nTax Calculation:")
+	for i, bracket := range country.TaxBrackets {
+		if i == 0 {
+			fmt.Printf("- Up to %.2f: %.1f%%\n", bracket.Threshold, bracket.Rate)
+		} else {
+			fmt.Printf("- %.2f to %.2f: %.1f%%\n",
+				country.TaxBrackets[i-1].Threshold, bracket.Threshold, bracket.Rate)
+		}
+	}
+
+	fmt.Printf("\nGROSS SALARY: %.2f\n", gross)
+	fmt.Printf("TAX DEDUCTION: %.2f\n", tax)
+	fmt.Printf("NET SALARY: %.2f\n", net)
 	fmt.Println(strings.Repeat("=", 30))
 }
