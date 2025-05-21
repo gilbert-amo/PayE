@@ -1,3 +1,3 @@
-module PayE
+module github.com/gilbert-amo/PayE
 
-go 1.23
+go 1.23.5

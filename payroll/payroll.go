@@ -2,6 +2,7 @@ package payroll
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -23,6 +24,11 @@ type PayrollConfig struct {
 	SplitEnabled     bool
 	BasicSalaryRatio float64
 	AllowanceRatio   float64
+}
+
+type TaxBracket struct {
+	Threshold float64
+	Rate      float64
 }
 
 func (e *Employee) CalculateSalary() float64 {
@@ -79,4 +85,25 @@ func (e *Employee) PrintSalaryBreakdown() {
 	} else {
 		fmt.Printf("\nTotal Earnings: $%.2f\n", total)
 	}
+}
+
+func CalculateTax(salary float64, brackets []TaxBracket) float64 {
+	tax := 0.0
+
+	// Sort brackets just in case (from lowest to highest threshold)
+	sort.Slice(brackets, func(i, j int) bool {
+		return brackets[i].Threshold < brackets[j].Threshold
+	})
+
+	// Find which bracket the salary falls into
+	for i := len(brackets) - 1; i >= 0; i-- {
+		if salary >= brackets[i].Threshold {
+			// Apply the rate for this bracket to the entire salary
+			tax = salary * (brackets[i].Rate / 100)
+			break
+		}
+	}
+
+	// If salary is below all thresholds, no tax
+	return tax
 }
