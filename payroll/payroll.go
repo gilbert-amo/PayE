@@ -2,37 +2,20 @@ package payroll
 
 import (
 	"fmt"
+	"github.com/gilbert-amo/PayE/pension"
+	"github.com/gilbert-amo/PayE/types"
 	"sort"
 	"strings"
 )
 
-type Employee struct {
-	Name        string
-	BasicSalary float64
-	CountryCode string
-	PieceRate   []PieceRateAggregation
-	Allowance   float64
-}
-
-type PieceRateAggregation struct {
-	Item     string
-	Rate     float64 // unit price
-	Quantity float64
-}
-
-type PayrollConfig struct {
+type Config struct {
 	SplitEnabled     bool
 	BasicSalaryRatio float64
 	AllowanceRatio   float64
 }
 
-type TaxBracket struct {
-	Threshold float64
-	Rate      float64
-}
-
-func (e *Employee) CalculateSalary() float64 {
-	totalPieceRate := e.calculatePieceRate()
+func CalculateSalary(e *types.Employee) float64 {
+	totalPieceRate := calculatePieceRate(e)
 
 	if e.BasicSalary > 0 {
 		// Piece work is a bonus on top of basic salary
@@ -43,7 +26,7 @@ func (e *Employee) CalculateSalary() float64 {
 }
 
 // calculatePieceRate computes the total from piece-rate work
-func (e *Employee) calculatePieceRate() float64 {
+func calculatePieceRate(e *types.Employee) float64 {
 	total := 0.0
 	for _, item := range e.PieceRate {
 		total += item.Rate * item.Quantity
@@ -52,21 +35,22 @@ func (e *Employee) calculatePieceRate() float64 {
 }
 
 // AddPieceRate adds a piece-rate work item to the employee
-func (e *Employee) AddPieceRate(item string, rate, quantity float64) {
-	e.PieceRate = append(e.PieceRate, PieceRateAggregation{
+func AddPieceRate(e *types.Employee, item string, rate, quantity float64) {
+	e.PieceRate = append(e.PieceRate, types.PieceRateAggregation{
 		Item:     item,
 		Rate:     rate,
 		Quantity: quantity,
 	})
 }
 
-// PrintSalaryBreakdown displays the compensation details
-func (e *Employee) PrintSalaryBreakdown() {
-	fmt.Printf("\nSalary Breakdown for %s:\n", e.Name)
-	fmt.Println(strings.Repeat("-", 30))
+func GetSalaryBreakdownWithPension(e *types.Employee, pensionCalc *pension.Calculator) string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("\nSalary Breakdown for %s:\n", e.Name))
+	sb.WriteString(strings.Repeat("-", 30) + "\n")
 
 	if e.BasicSalary > 0 {
-		fmt.Printf("Basic Salary: $%.2f\n", e.BasicSalary)
+		sb.WriteString(fmt.Sprintf("Basic Salary: $%.2f\n", e.BasicSalary))
 	}
 
 	if len(e.PieceRate) > 0 {
@@ -76,18 +60,26 @@ func (e *Employee) PrintSalaryBreakdown() {
 			fmt.Printf("- %s: %.0f units @ $%.2f = $%.2f\n",
 				item.Item, item.Quantity, item.Rate, earnings)
 		}
-		fmt.Printf("Total Piece Rate: $%.2f\n", e.calculatePieceRate())
+		fmt.Printf("Total Piece Rate: $%.2f\n", calculatePieceRate(e))
 	}
 
-	total := e.CalculateSalary()
+	total := CalculateSalary(e)
 	if e.BasicSalary > 0 && len(e.PieceRate) > 0 {
 		fmt.Printf("\nTotal Salary (Basic + Piece Rate): $%.2f\n", total)
 	} else {
 		fmt.Printf("\nTotal Earnings: $%.2f\n", total)
 	}
+
+	pensionBreakdown := pensionCalc.GetContributionBreakdown()
+	sb.WriteString("\nPension Contributions:\n")
+	for k, v := range pensionBreakdown {
+		sb.WriteString(fmt.Sprintf("%-20s: %.2f\n", k, v))
+	}
+
+	return sb.String()
 }
 
-func CalculateTax(salary float64, brackets []TaxBracket) float64 {
+func CalculateTax(salary float64, brackets []types.TaxBracket) float64 {
 	tax := 0.0
 
 	// Sort brackets just in case (from lowest to highest threshold)

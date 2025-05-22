@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"fmt"
 	"github.com/gilbert-amo/PayE/payroll"
+	"github.com/gilbert-amo/PayE/pension"
+	"github.com/gilbert-amo/PayE/types"
 	"os"
 	"sort"
 	"strconv"
@@ -13,13 +15,19 @@ import (
 type Country struct {
 	Name        string
 	MinimumWage float64
-	TaxBrackets []payroll.TaxBracket
+	TaxBrackets []types.TaxBracket
 }
 
 func main() {
 	reader := bufio.NewReader(os.Stdin)
 	countries := make(map[string]Country)
-	config := payroll.PayrollConfig{SplitEnabled: false}
+	config := payroll.Config{SplitEnabled: false}
+
+	pensionTiers := []types.Tier{
+		{Name: "Tier 1", Percentage: 0.135},
+		{Name: "Tier 2", Percentage: 0.55},
+		{Name: "Tier 3", Percentage: 0.315},
+	}
 
 	// Country setup (unchanged)
 	fmt.Println("=== Country Setup ===")
@@ -50,7 +58,7 @@ func main() {
 		}
 
 		// Tax bracket setup
-		var taxBrackets []payroll.TaxBracket
+		var taxBrackets []types.TaxBracket
 		// When setting up country tax brackets:
 		fmt.Println("\nSetting up peak tax brackets:")
 		fmt.Println("Enter thresholds where specific rates should apply")
@@ -79,7 +87,7 @@ func main() {
 				continue
 			}
 
-			taxBrackets = append(taxBrackets, payroll.TaxBracket{
+			taxBrackets = append(taxBrackets, types.TaxBracket{
 				Threshold: threshold,
 				Rate:      rate,
 			})
@@ -121,9 +129,9 @@ func main() {
 
 	// Employee setup
 	fmt.Println("\n=== Employee Setup ===")
-	var employees []payroll.Employee
+	var employees []types.Employee
 	for {
-		emp := payroll.Employee{}
+		emp := types.Employee{}
 
 		fmt.Print("\nEnter employee name (or 'done' to finish): ")
 		name, _ := reader.ReadString('\n')
@@ -167,7 +175,7 @@ func main() {
 				continue
 			}
 
-			emp.PieceRate = append(emp.PieceRate, payroll.PieceRateAggregation{
+			emp.PieceRate = append(emp.PieceRate, types.PieceRateAggregation{
 				Item:     item,
 				Rate:     rate,
 				Quantity: qty,
@@ -240,14 +248,19 @@ func main() {
 			taxAmount = payroll.CalculateTax(totalEarnings, country.TaxBrackets)
 		}
 
-		netSalary := totalEarnings - taxAmount
+		// Calculate pension
+		pensionCalc := pension.NewCalculator(&emp)
+		pensionCalc.Calculate(pensionTiers)
+		pensionDeduction := pensionCalc.EmployeeContribution
+		totalDeductions := taxAmount + pensionDeduction
 
-		// Print results with tax details
-		printPayrollReport(emp, country, originalBasic, totalEarnings, taxAmount, netSalary)
+		netSalary := totalEarnings - totalDeductions
+
+		printPayrollReport(emp, country, originalBasic, totalEarnings, taxAmount, pensionCalc, netSalary)
 	}
 }
 
-func calculatePieceEarnings(pieces []payroll.PieceRateAggregation) float64 {
+func calculatePieceEarnings(pieces []types.PieceRateAggregation) float64 {
 	total := 0.0
 	for _, pw := range pieces {
 		total += pw.Rate * pw.Quantity
@@ -255,7 +268,7 @@ func calculatePieceEarnings(pieces []payroll.PieceRateAggregation) float64 {
 	return total
 }
 
-func printPayrollReport(emp payroll.Employee, country Country, originalBasic, gross, tax, net float64) {
+func printPayrollReport(emp types.Employee, country Country, originalBasic, gross, tax float64, pensionCalc *pension.Calculator, net float64) {
 	fmt.Printf("\n=== %s ===\n", emp.Name)
 	fmt.Printf("Country: %s (Min Wage: %.2f)\n", country.Name, country.MinimumWage)
 
@@ -287,8 +300,21 @@ func printPayrollReport(emp payroll.Employee, country Country, originalBasic, gr
 		}
 	}
 
+	// Print pension information
+	fmt.Println("\nPension Contributions:")
+	for k, v := range pensionCalc.GetContributionBreakdown() {
+		fmt.Printf("%-20s: %.2f\n", k, v)
+	}
+
+	fmt.Println("\nPension Tier Allocations:")
+	for k, v := range pensionCalc.GetTierBreakdown() {
+		fmt.Printf("%-20s: %.2f\n", k, v)
+	}
+
 	fmt.Printf("\nGROSS SALARY: %.2f\n", gross)
 	fmt.Printf("TAX DEDUCTION: %.2f\n", tax)
+	fmt.Printf("PENSION DEDUCTION: %.2f\n", pensionCalc.EmployeeContribution)
+	fmt.Printf("TOTAL DEDUCTIONS: %.2f\n", tax+pensionCalc.EmployeeContribution)
 	fmt.Printf("NET SALARY: %.2f\n", net)
 	fmt.Println(strings.Repeat("=", 30))
 }
