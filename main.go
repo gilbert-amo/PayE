@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/gilbert-amo/PayE/payroll"
 	"github.com/gilbert-amo/PayE/pension"
+	"github.com/gilbert-amo/PayE/process"
 	"github.com/gilbert-amo/PayE/types"
 	"os"
 	"sort"
@@ -20,6 +21,33 @@ type Country struct {
 
 func main() {
 	reader := bufio.NewReader(os.Stdin)
+
+	for {
+		fmt.Println("\nMain Menu:")
+		fmt.Println("1. Process Management")
+		fmt.Println("2. Payroll Management")
+		fmt.Println("3. Exit")
+
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(choice)
+
+		switch choice {
+		case "1":
+			processMenu(reader)
+		case "2":
+			payrollMenu(reader)
+		case "3":
+			fmt.Println("Exiting...")
+			return
+		default:
+			fmt.Println("Invalid choice")
+		}
+	}
+
+}
+
+func payrollMenu(reader *bufio.Reader) {
+	fmt.Println("=== Country Setup ===")
 	countries := make(map[string]Country)
 	config := payroll.Config{SplitEnabled: false}
 
@@ -29,8 +57,6 @@ func main() {
 		{Name: "Tier 3", Percentage: 0.315},
 	}
 
-	// Country setup (unchanged)
-	fmt.Println("=== Country Setup ===")
 	for {
 		fmt.Print("\nEnter country code (3 letters, or 'done' to finish): ")
 		code, _ := reader.ReadString('\n')
@@ -260,6 +286,45 @@ func main() {
 	}
 }
 
+func processMenu(reader *bufio.Reader) {
+	process.InitializeSampleData()
+
+	fmt.Println(" Process Management")
+
+	for {
+		process.DisplayMainMenu()
+		choice, err := process.GetInput("Enter your choice: ")
+		if err != nil {
+			fmt.Println("Error reading input:", err)
+			continue
+		}
+
+		switch choice {
+		case "1":
+			process.CreateNewProduct()
+		case "2":
+			process.AddProcessToProduct()
+		case "3":
+			process.AssignWorkersToProcess()
+		case "4":
+			process.UpdateProcessStatus()
+		case "5":
+			process.RecordProductionQuantity()
+		case "6":
+			process.AddNewWorker()
+		case "7":
+			process.ViewAllProducts()
+		case "8":
+			process.GenerateProductionReport()
+		case "9":
+			fmt.Println("Exiting application...")
+			return
+		default:
+			fmt.Println("Invalid choice, please try again.")
+		}
+	}
+}
+
 func calculatePieceEarnings(pieces []types.PieceRateAggregation) float64 {
 	total := 0.0
 	for _, pw := range pieces {
@@ -318,3 +383,7 @@ func printPayrollReport(emp types.Employee, country Country, originalBasic, gros
 	fmt.Printf("NET SALARY: %.2f\n", net)
 	fmt.Println(strings.Repeat("=", 30))
 }
+
+//func main() {
+
+//}
