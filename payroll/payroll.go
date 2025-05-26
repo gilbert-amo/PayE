@@ -99,3 +99,61 @@ func CalculateTax(salary float64, brackets []types.TaxBracket) float64 {
 	// If salary is below all thresholds, no tax
 	return tax
 }
+func CalculatePieceEarnings(pieces []types.PieceRateAggregation) float64 {
+	total := 0.0
+	for _, pw := range pieces {
+		total += pw.Rate * pw.Quantity
+	}
+	return total
+}
+
+func PrintPayrollReport(emp types.Employee, country types.Country, originalBasic, gross, tax float64, pensionCalc *pension.Calculator, net float64) {
+	fmt.Printf("\n=== %s ===\n", emp.Name)
+	fmt.Printf("Country: %s (Min Wage: %.2f)\n", country.Name, country.MinimumWage)
+
+	if originalBasic > 0 {
+		fmt.Printf("\nOriginal Basic Salary: %.2f\n", originalBasic)
+	}
+	fmt.Printf("Current Basic Salary: %.2f\n", emp.BasicSalary)
+
+	if emp.Allowance > 0 {
+		fmt.Printf("Allowance: %.2f\n", emp.Allowance)
+	}
+
+	if len(emp.PieceRate) > 0 {
+		fmt.Println("\nPiece-Rate Details:")
+		for _, pw := range emp.PieceRate {
+			fmt.Printf("- %s: %.0f × %.2f = %.2f\n",
+				pw.Item, pw.Quantity, pw.Rate, pw.Rate*pw.Quantity)
+		}
+		fmt.Printf("Total Piece-Rate Earnings: %.2f\n", CalculatePieceEarnings(emp.PieceRate))
+	}
+
+	fmt.Println("\nTax Calculation:")
+	for i, bracket := range country.TaxBrackets {
+		if i == 0 {
+			fmt.Printf("- Up to %.2f: %.1f%%\n", bracket.Threshold, bracket.Rate)
+		} else {
+			fmt.Printf("- %.2f to %.2f: %.1f%%\n",
+				country.TaxBrackets[i-1].Threshold, bracket.Threshold, bracket.Rate)
+		}
+	}
+
+	// Print pension information
+	fmt.Println("\nPension Contributions:")
+	for k, v := range pensionCalc.GetContributionBreakdown() {
+		fmt.Printf("%-20s: %.2f\n", k, v)
+	}
+
+	fmt.Println("\nPension Tier Allocations:")
+	for k, v := range pensionCalc.GetTierBreakdown() {
+		fmt.Printf("%-20s: %.2f\n", k, v)
+	}
+
+	fmt.Printf("\nGROSS SALARY: %.2f\n", gross)
+	fmt.Printf("TAX DEDUCTION: %.2f\n", tax)
+	fmt.Printf("PENSION DEDUCTION: %.2f\n", pensionCalc.EmployeeContribution)
+	fmt.Printf("TOTAL DEDUCTIONS: %.2f\n", tax+pensionCalc.EmployeeContribution)
+	fmt.Printf("NET SALARY: %.2f\n", net)
+	fmt.Println(strings.Repeat("=", 30))
+}

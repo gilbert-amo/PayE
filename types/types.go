@@ -23,3 +23,9 @@ type Tier struct {
 	Name       string
 	Percentage float64
 }
+
+type Country struct {
+	Name        string
+	MinimumWage float64
+	TaxBrackets []TaxBracket
+}
