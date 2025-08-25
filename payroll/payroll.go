@@ -2,10 +2,10 @@ package payroll
 
 import (
 	"fmt"
+	"strings"
+
 	"github.com/gilbert-amo/PayE/pension"
 	"github.com/gilbert-amo/PayE/types"
-	"sort"
-	"strings"
 )
 
 type Config struct {
@@ -79,25 +79,139 @@ func GetSalaryBreakdownWithPension(e *types.Employee, pensionCalc *pension.Calcu
 	return sb.String()
 }
 
-func CalculateTax(salary float64, brackets []types.TaxBracket) float64 {
-	tax := 0.0
+// CalculateTaxRecursive implements progressive tax bracket calculation
+// where tax is calculated progressively on each bracket range
+// The minimumWage parameter ensures that minimum wage is always taxed at 0%
+func CalculateTaxRecursive(originalSalary float64, brackets []types.TaxBracket, minimumWage float64) (float64, []TaxCalculationStep) {
+	var totalTax float64
+	var steps []TaxCalculationStep
 
-	// Sort brackets just in case (from lowest to highest threshold)
-	sort.Slice(brackets, func(i, j int) bool {
-		return brackets[i].Threshold < brackets[j].Threshold
+	// Create a copy of brackets and add minimum wage as 0% tax threshold
+	// This ensures minimum wage is always tax-free
+	enhancedBrackets := make([]types.TaxBracket, 0, len(brackets)+1)
+
+	// Add minimum wage as 0% tax bracket at the beginning
+	enhancedBrackets = append(enhancedBrackets, types.TaxBracket{
+		Threshold: minimumWage,
+		Rate:      0.0, // 0% tax on minimum wage
 	})
 
-	// Find which bracket the salary falls into
-	for i := len(brackets) - 1; i >= 0; i-- {
-		if salary >= brackets[i].Threshold {
-			// Apply the rate for this bracket to the entire salary
-			tax = salary * (brackets[i].Rate / 100)
+	// Add all other brackets
+	enhancedBrackets = append(enhancedBrackets, brackets...)
+
+	// Progressive subtraction: each threshold amount is subtracted from basic salary
+	remainingSalary := originalSalary
+	for _, bracket := range enhancedBrackets {
+		var taxAmount float64
+		var taxableAmount float64
+
+		if remainingSalary >= bracket.Threshold {
+			// Tax at the threshold rate for the full threshold amount
+			taxAmount = bracket.Threshold * (bracket.Rate / 100)
+			taxableAmount = bracket.Threshold
+			remainingSalary -= bracket.Threshold
+		} else if remainingSalary > 0 {
+			// Apply the same rate to the remaining salary and end calculation
+			taxAmount = remainingSalary * (bracket.Rate / 100)
+			taxableAmount = remainingSalary
+			remainingSalary = 0 // Set to 0 since we're taxing the remaining amount
+		} else {
+			// No remaining salary to tax
+			break
+		}
+
+		totalTax += taxAmount
+
+		// Record this calculation step
+		step := TaxCalculationStep{
+			RemainingSalary:  remainingSalary + taxableAmount, // Show salary before this step
+			TaxRate:          bracket.Rate,
+			TaxAmount:        taxAmount,
+			BracketThreshold: bracket.Threshold,
+			TaxableAmount:    taxableAmount,
+			BracketRange:     fmt.Sprintf("Tax at %.1f%%", bracket.Rate),
+		}
+		steps = append(steps, step)
+
+		// If we've taxed the remaining salary (less than threshold), end the session
+		if remainingSalary == 0 {
+			break
+		}
+
+		// If salary becomes negative, stop
+		if remainingSalary < 0 {
 			break
 		}
 	}
 
-	// If salary is below all thresholds, no tax
+	return totalTax, steps
+}
+
+// TaxCalculationStep represents a single step in the progressive tax calculation
+type TaxCalculationStep struct {
+	RemainingSalary  float64
+	TaxRate          float64
+	TaxAmount        float64
+	BracketThreshold float64
+	TaxableAmount    float64
+	BracketRange     string
+}
+
+// findApplicableBracket finds the highest applicable tax bracket for a given salary
+func findApplicableBracket(salary float64, brackets []types.TaxBracket) *types.TaxBracket {
+	var applicableBracket *types.TaxBracket
+
+	for i := len(brackets) - 1; i >= 0; i-- {
+		if salary >= brackets[i].Threshold {
+			applicableBracket = &brackets[i]
+			break
+		}
+	}
+
+	return applicableBracket
+}
+
+// CalculateTax is kept for backward compatibility but now uses the recursive method
+func CalculateTax(salary float64, brackets []types.TaxBracket, minimumWage float64) float64 {
+	tax, _ := CalculateTaxRecursive(salary, brackets, minimumWage)
 	return tax
+}
+
+// GetTaxCalculationSummary returns a summary of the recursive tax calculation
+func GetTaxCalculationSummary(steps []TaxCalculationStep) string {
+	if len(steps) == 0 {
+		return "No tax calculation steps available"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Tax Calculation Summary:\n"))
+	sb.WriteString(fmt.Sprintf("Total Steps: %d\n", len(steps)))
+	sb.WriteString(fmt.Sprintf("Total Tax: %.2f\n", calculateTotalTax(steps)))
+	sb.WriteString(fmt.Sprintf("Average Tax Rate: %.2f%%\n", calculateAverageTaxRate(steps)))
+
+	return sb.String()
+}
+
+// calculateTotalTax calculates the total tax from all steps
+func calculateTotalTax(steps []TaxCalculationStep) float64 {
+	total := 0.0
+	for _, step := range steps {
+		total += step.TaxAmount
+	}
+	return total
+}
+
+// calculateAverageTaxRate calculates the average tax rate across all steps
+func calculateAverageTaxRate(steps []TaxCalculationStep) float64 {
+	if len(steps) == 0 {
+		return 0.0
+	}
+
+	totalRate := 0.0
+	for _, step := range steps {
+		totalRate += step.TaxRate
+	}
+	return totalRate / float64(len(steps))
 }
 func CalculatePieceEarnings(pieces []types.PieceRateAggregation) float64 {
 	total := 0.0
@@ -107,7 +221,7 @@ func CalculatePieceEarnings(pieces []types.PieceRateAggregation) float64 {
 	return total
 }
 
-func PrintPayrollReport(emp types.Employee, country types.Country, originalBasic, gross, tax float64, pensionCalc *pension.Calculator, net float64) {
+func PrintPayrollReport(emp types.Employee, country types.Country, originalBasic, gross, tax float64, pensionCalc *pension.Calculator, net float64, taxSteps []TaxCalculationStep) {
 	fmt.Printf("\n=== %s ===\n", emp.Name)
 	fmt.Printf("Country: %s (Min Wage: %.2f)\n", country.Name, country.MinimumWage)
 
@@ -130,13 +244,20 @@ func PrintPayrollReport(emp types.Employee, country types.Country, originalBasic
 	}
 
 	fmt.Println("\nTax Calculation:")
-	for i, bracket := range country.TaxBrackets {
-		if i == 0 {
-			fmt.Printf("- Up to %.2f: %.1f%%\n", bracket.Threshold, bracket.Rate)
-		} else {
-			fmt.Printf("- %.2f to %.2f: %.1f%%\n",
-				country.TaxBrackets[i-1].Threshold, bracket.Threshold, bracket.Rate)
+	for _, bracket := range country.TaxBrackets {
+		fmt.Printf("- Threshold %.2f: %.1f%%\n", bracket.Threshold, bracket.Rate)
+	}
+
+	// Display progressive subtraction tax calculation steps if available
+	if len(taxSteps) > 0 {
+		fmt.Println("\nProgressive Subtraction Tax Calculation Steps:")
+		fmt.Println("Step | Remaining Salary | Subtract Amount | Tax Rate | Tax Amount")
+		fmt.Println("-----|------------------|----------------|----------|-----------")
+		for i, step := range taxSteps {
+			fmt.Printf("%4d | %16.2f | %14.2f | %8.1f%% | %10.2f\n",
+				i+1, step.RemainingSalary, step.TaxableAmount, step.TaxRate, step.TaxAmount)
 		}
+		fmt.Printf("Total Tax: %.2f\n", tax)
 	}
 
 	// Print pension information
