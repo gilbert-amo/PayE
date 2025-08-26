@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -21,10 +20,78 @@ func main() {
 		countries := make(map[string]types.Country)
 		config := payroll.Config{SplitEnabled: false}
 
-		pensionTiers := []types.Tier{
-			{Name: "Tier 1", Percentage: 0.135},
-			{Name: "Tier 2", Percentage: 0.55},
-			{Name: "Tier 3", Percentage: 0.315},
+		// Pension tier setup
+		fmt.Println("\n=== Pension Tier Setup ===")
+		fmt.Println("Enter pension tiers (total must equal 100%)")
+		fmt.Println("Example: Tier 1: 13.5%, Tier 2: 55%, Tier 3: 31.5%")
+		fmt.Println("Type 'done' for tier name when finished")
+
+		var pensionTiers []types.Tier
+		totalPercentage := 0.0
+
+		for {
+			fmt.Printf("\nCurrent total: %.1f%%\n", totalPercentage*100)
+
+			fmt.Print("Enter tier name (or 'done' to finish): ")
+			tierName, _ := reader.ReadString('\n')
+			tierName = strings.TrimSpace(tierName)
+			if strings.ToLower(tierName) == "done" {
+				break
+			}
+
+			if tierName == "" {
+				fmt.Println("Tier name cannot be empty. Please try again.")
+				continue
+			}
+
+			remainingPercentage := (1.0 - totalPercentage) * 100
+			if remainingPercentage <= 0 {
+				fmt.Println("Total already equals 100%. Tier setup complete!")
+				break
+			}
+
+			fmt.Printf("Enter tier percentage (0.1 to %.1f): ", remainingPercentage)
+			percentageStr, _ := reader.ReadString('\n')
+			percentage, err := strconv.ParseFloat(strings.TrimSpace(percentageStr), 64)
+			if err != nil || percentage <= 0 {
+				fmt.Println("Invalid percentage. Please enter a valid positive number.")
+				continue
+			}
+
+			// Convert percentage to decimal
+			percentageDecimal := percentage / 100
+
+			if totalPercentage+percentageDecimal > 1.001 { // Allow small floating point precision
+				fmt.Printf("Total would exceed 100%%. Maximum allowed: %.1f%%\n", remainingPercentage)
+				continue
+			}
+
+			pensionTiers = append(pensionTiers, types.Tier{
+				Name:       tierName,
+				Percentage: percentageDecimal,
+			})
+
+			totalPercentage += percentageDecimal
+			fmt.Printf("Added %s: %.1f%%\n", tierName, percentage)
+
+			// Check if we've reached 100% (with small tolerance)
+			if totalPercentage >= 0.999 {
+				fmt.Printf("Total reached %.1f%%. Tier setup complete!\n", totalPercentage*100)
+				break
+			}
+		}
+
+		// Validate total equals 100% (with tolerance)
+		if totalPercentage < 0.999 {
+			fmt.Printf("Warning: Total percentage is %.1f%%, not 100%%\n", totalPercentage*100)
+			fmt.Println("Using default tiers instead")
+			pensionTiers = []types.Tier{
+				{Name: "Tier 1", Percentage: 0.135},
+				{Name: "Tier 2", Percentage: 0.55},
+				{Name: "Tier 3", Percentage: 0.315},
+			}
+		} else {
+			fmt.Printf("✓ Pension tiers configured successfully! Total: %.1f%%\n", totalPercentage*100)
 		}
 
 		for {
@@ -56,10 +123,12 @@ func main() {
 			// Tax bracket setup
 			var taxBrackets []types.TaxBracket
 			// When setting up country tax brackets:
-			fmt.Println("\nSetting up peak tax brackets:")
-			fmt.Println("Enter thresholds where specific rates should apply")
-			fmt.Println("Example: If salary reaches 500, apply 5% to entire amount")
-			//fmt.Println("         If salary reaches 1000, apply 10% to entire amount")
+			fmt.Println("\nSetting up tax brackets:")
+			fmt.Printf("Note: Minimum wage (%.2f) will automatically be taxed at 0%%\n", minWage)
+			fmt.Println("Enter additional threshold amounts that will be taxed at specific rates")
+			fmt.Println("Each threshold amount will be taxed at its rate and subtracted from salary")
+			fmt.Println("Example: Threshold 500 with 5% rate = 500 × 5% = 25 tax")
+			fmt.Println("Note: 0% tax rates are valid (e.g., for tax-free allowances)")
 
 			for {
 				fmt.Print("Enter threshold amount (or 'done'): ")
@@ -83,16 +152,16 @@ func main() {
 					continue
 				}
 
+				// Allow 0% tax rates for progressive tax systems (e.g., tax-free allowance)
+				// 0% rates are valid and commonly used in progressive tax systems
+
 				taxBrackets = append(taxBrackets, types.TaxBracket{
 					Threshold: threshold,
 					Rate:      rate,
 				})
 			}
 
-			// Sort brackets by threshold
-			sort.Slice(taxBrackets, func(i, j int) bool {
-				return taxBrackets[i].Threshold < taxBrackets[j].Threshold
-			})
+			// Tax brackets are processed in the order they were entered (no sorting)
 
 			countries[code] = types.Country{
 				Name:        name,
@@ -206,7 +275,7 @@ func main() {
 		for _, emp := range employees {
 			country := countries[emp.CountryCode]
 			pieceEarnings := payroll.CalculatePieceEarnings(emp.PieceRate)
-			originalBasic := emp.BasicSalary
+			originalBasic := emp.BasicSalary // Track the original basic salary for recursive tax calculation
 			emp.Allowance = 0
 
 			// Handle employees with no basic salary
@@ -240,19 +309,30 @@ func main() {
 			totalEarnings := emp.BasicSalary + emp.Allowance
 
 			taxAmount := 0.0
+			var taxCalculationSteps []payroll.TaxCalculationStep
 			if len(country.TaxBrackets) > 0 {
-				taxAmount = payroll.CalculateTax(totalEarnings, country.TaxBrackets)
+				// Use recursive PAYE tax calculation on the ORIGINAL basic salary entered by user
+				// This ensures we track the tax calculation from the initial salary amount
+				// The minimum wage is automatically applied as a 0% tax threshold
+				taxAmount, taxCalculationSteps = payroll.CalculateTaxRecursive(originalBasic, country.TaxBrackets, country.MinimumWage)
 			}
 
 			// Calculate pension
 			pensionCalc := pension.NewCalculator(&emp)
+
+			// Option 1: Use the tiers entered during setup
 			pensionCalc.Calculate(pensionTiers)
+
+			// Option 2: Use internal tiers (uncomment to use instead)
+			// pensionCalc.SetTiers(pensionTiers)
+			// pensionCalc.CalculateWithInternalTiers()
+
 			pensionDeduction := pensionCalc.EmployeeContribution
 			totalDeductions := taxAmount + pensionDeduction
 
 			netSalary := totalEarnings - totalDeductions
 
-			payroll.PrintPayrollReport(emp, country, originalBasic, totalEarnings, taxAmount, pensionCalc, netSalary)
+			payroll.PrintPayrollReport(emp, country, originalBasic, totalEarnings, taxAmount, pensionCalc, netSalary, taxCalculationSteps)
 		}
 	}
 
